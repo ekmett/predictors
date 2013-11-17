@@ -3,6 +3,7 @@
 
 import Control.Applicative
 import Control.Arrow
+import Control.Monad as M
 import Control.Monad.Random
 import Control.Lens
 import Data.Foldable as F
@@ -19,7 +20,7 @@ instance Num a => Num (b -> a) where
   abs = fmap abs
   signum = fmap signum
 
--- | Shannon entropy in @logBase 2@
+-- | Shannon entropy in @nats@
 entropy :: Foldable f => f Double -> Double
 entropy = negate . foldr (\x r -> xlog x + r) 0
 {-# INLINE entropy #-}
@@ -27,21 +28,21 @@ entropy = negate . foldr (\x r -> xlog x + r) 0
 xlog :: Double -> Double
 xlog x
   | x <= 1e-323 = 0 -- below this @'xlog' x = NaN@
-  | otherwise   = x * logBase 2 x
+  | otherwise   = x * log x
 {-# INLINE xlog #-}
 
-type Predictor a = [a] -> Map a Double
+-- TODO: add vagueness sources
 
 -- | Maximum likelihood predictor or density estimator
-mlp :: Ord a => Predictor a
-mlp s = case foldr go (0 :: Int,M.empty) s of
+mlp :: (Foldable f, Ord a) => (e -> a) -> f e -> Map a Double
+mlp f s = case foldr go (0 :: Int,M.empty) s of
   (n, m) -> fmap (\k -> fromIntegral k / fromIntegral n) m
  where
-  go a (n,m) = (n + 1, m & at a . non (0 :: Int) +~ 1)
+  go e (n,m) = (n + 1, m & at (f e) . non (0 :: Int) +~ 1)
 
 -- | Entropy @H(a)@
 h :: (Foldable f, Ord a) => (e -> a) -> f e -> Double
-h f = entropy . mlp . fmap f . F.toList
+h f = entropy . mlp f
 
 -- | Conditional entropy
 --
@@ -77,17 +78,36 @@ cond a b = h (a &&& b) - h b
 mutual :: (Foldable f, Ord a, Ord b) => (e -> a) -> (e -> b) -> f e -> Double
 mutual a b = h a - cond a b
 
+divergence :: Foldable f => (e -> Double) -> (e -> Double) -> f e -> Double
+divergence p q = foldr (\x r -> p x * (log (p x) - log (q x)) + r) 0
+
+-- | vague kl-divergence comparing between the maximum likelihood predictor and a bootstrapped
+-- maximum entropy model
+vague :: (Foldable f, MonadRandom m, Ord a, Ord b) => (e -> a) -> (e -> b) -> f e -> m Double
+vague f g s = do
+  let pab = mlp (f &&& g) s
+  s' <- bootstrap s
+  let qa  = mlp f s'
+      qb  = mlp g s'
+      qab = mlp (f &&& g) s'
+      stepq ab@(a,b) r = z * (log2 z - log2 (pab M.! ab)) + r where z = (qa M.! a) * (qb M.! b)
+  return $ F.foldr stepq 0 (keys qab)
+
+-- | vague kl-divergence comparing between the maximum likelihood predictor and a bootstrapped
+-- maximum entropy model
+honest :: (Foldable f, MonadRandom m, Ord a, Ord b) => (e -> a) -> (e -> b) -> f e -> m Double
+honest f g s = do
+  let pa  = mlp f s
+      pb  = mlp g s
+      pab = mlp (f &&& g) s
+  s' <- bootstrap s
+  let qab = mlp (f &&& g) s'
+      stepp (a,b) p r = p * (log p - log (pa M.! a) - log (pb M.! b)) + r
+      stepq ab    q r = q * (log q - log (pab M.! ab)) + r
+  return $ M.foldrWithKey stepp 0 pab - M.foldrWithKey stepq 0 qab
+
 bootstrap :: (Foldable f, MonadRandom m) => f a -> m (Vector a)
-bootstrap as = fmap (backpermute vs) $ replicateM n $ getRandomR (0 :: Int,n-1)
+bootstrap as = liftM (backpermute vs) $ V.replicateM n $ getRandomR (0 :: Int,n-1)
   where
     vs = V.fromList (F.toList as)
     n = V.length vs
-
--- | 1 pass
-{-
-cond f g s = case F.foldr go (0 :: Int,M.empty) s of
-  (n,m) -> F.sum $ fmap (step n) m
- where
-  go ab (n,m) = (n + 1, m & at (f ab) . non (0 :: Int, M.empty) %~ \(n',m') -> (n' + 1, m' & at (g ab).non (0 :: Int) +~ 1))
-  step n (k,m') = entropy (fmap (\j -> fromIntegral j / fromIntegral k) m') * fromIntegral k / fromIntegral n
--}

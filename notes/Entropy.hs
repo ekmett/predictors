@@ -85,16 +85,16 @@ divergence p q = foldr (\x r -> p x * (log (p x) - log (q x)) + r) 0
 -- maximum entropy model
 vague :: (Foldable f, MonadRandom m, Ord a, Ord b) => (e -> a) -> (e -> b) -> f e -> m Double
 vague f g s = do
-  let pab = mlp (f &&& g) s
+  let pa  = mlp f s
+      pb  = mlp g s
   s' <- bootstrap s
-  let qa  = mlp f s'
-      qb  = mlp g s'
-      qab = mlp (f &&& g) s'
-      stepq ab@(a,b) r = z * (log2 z - log2 (pab M.! ab)) + r where z = (qa M.! a) * (qb M.! b)
-  return $ F.foldr stepq 0 (keys qab)
+  let qab = mlp (f &&& g) s'
+      stepq (a,b) q r = q * (log q - log (pa M.! a) - log (pb M.! b)) + r
+  return $ M.foldrWithKey stepq 0 qab
 
 -- | vague kl-divergence comparing between the maximum likelihood predictor and a bootstrapped
 -- maximum entropy model
+-- honest a b = D(P a b||P a * P b) - D(P a b || Q a b) + D(P a * P b||Q a * Q b)
 honest :: (Foldable f, MonadRandom m, Ord a, Ord b) => (e -> a) -> (e -> b) -> f e -> m Double
 honest f g s = do
   let pa  = mlp f s
@@ -102,8 +102,11 @@ honest f g s = do
       pab = mlp (f &&& g) s
   s' <- bootstrap s
   let qab = mlp (f &&& g) s'
-      stepp (a,b) p r = p * (log p - log (pa M.! a) - log (pb M.! b)) + r
-      stepq ab    q r = q * (log q - log (pab M.! ab)) + r
+      qa  = mlp f s'
+      qb  = mlp g s'
+      stepp (a,b)    p r = p * (log p - log (pa M.! a) - log (pb M.! b)) + r
+      stepq ab@(a,b) q r = q * (log q + log (pa M.! a) + log (pb M.! b) - log (pab M.! ab) - log (qa M.! a) - log (qb M.! b)) + r
+      -- stepq ab    q r = q * (log q - log (pab M.! ab)) + r
   return $ M.foldrWithKey stepp 0 pab - M.foldrWithKey stepq 0 qab
 
 bootstrap :: (Foldable f, MonadRandom m) => f a -> m (Vector a)

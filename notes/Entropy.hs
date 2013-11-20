@@ -89,11 +89,11 @@ vague f g s = do
       pb  = mlp g s
   s' <- bootstrap s
   let qab = mlp (f &&& g) s'
-      stepq (a,b) q r = q * (log q - log (pa M.! a) - log (pb M.! b)) + r
-  return $ M.foldrWithKey stepq 0 qab
+      stepq r (a,b) q = r + q * (log q - log (pa M.! a) - log (pb M.! b))
+  return $ M.foldlWithKey' stepq 0 qab
 
--- | vague kl-divergence comparing between the maximum likelihood predictor and a bootstrapped
--- maximum entropy model
+-- | vague and "honest" kl-divergence comparing between the maximum likelihood predictor and a bootstrapped
+-- maximum entropy model. Here we account for self-loss.
 -- honest a b = D(P a b||P a * P b) - D(P a b || Q a b) + D(P a * P b||Q a * Q b)
 honest :: (Foldable f, MonadRandom m, Ord a, Ord b) => (e -> a) -> (e -> b) -> f e -> m Double
 honest f g s = do
@@ -104,10 +104,12 @@ honest f g s = do
   let qab = mlp (f &&& g) s'
       qa  = mlp f s'
       qb  = mlp g s'
-      stepp (a,b)    p r = p * (log p - log (pa M.! a) - log (pb M.! b)) + r
-      stepq ab@(a,b) q r = q * (log q + log (pa M.! a) + log (pb M.! b) - log (pab M.! ab) - log (qa M.! a) - log (qb M.! b)) + r
+      stepp r (a,b)    p = r + p * (log p - log (pa M.! a) - log (pb M.! b))
+      stepq r ab@(a,b) q = r + q * (log q - log (pab M.! ab)
+                                  + log (pa M.! a) - log (qa M.! a)
+                                  + log (pb M.! b) - log (qb M.! b))
       -- stepq ab    q r = q * (log q - log (pab M.! ab)) + r
-  return $ M.foldrWithKey stepp 0 pab - M.foldrWithKey stepq 0 qab
+  return $ M.foldlWithKey' stepp 0 pab - M.foldlWithKey' stepq 0 qab
 
 bootstrap :: (Foldable f, MonadRandom m) => f a -> m (Vector a)
 bootstrap as = liftM (backpermute vs) $ V.replicateM n $ getRandomR (0 :: Int,n-1)

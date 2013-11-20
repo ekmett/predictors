@@ -20,4 +20,4 @@ xlog :: Double -> Double
 xlog x
   | x <= 1e-323 = 0 -- below this @'xlog' x = NaN@
   | otherwise   = x * logBase 2 x
-{-# INLINE xlogx #-}
+{-# INLINE xlog #-}
